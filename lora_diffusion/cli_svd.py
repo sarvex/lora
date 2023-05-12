@@ -15,9 +15,7 @@ from .lora import (
 
 def _iter_lora(model):
     for module in model.modules():
-        if isinstance(module, LoraInjectedConv2d) or isinstance(
-            module, LoraInjectedLinear
-        ):
+        if isinstance(module, (LoraInjectedConv2d, LoraInjectedLinear)):
             yield module
 
 

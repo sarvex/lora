@@ -103,11 +103,7 @@ imagenet_style_templates_small = [
 
 
 def _randomset(lis):
-    ret = []
-    for i in range(len(lis)):
-        if random.random() < 0.5:
-            ret.append(lis[i])
-    return ret
+    return [lis[i] for i in range(len(lis)) if random.random() < 0.5]
 
 
 def _shuffle(lis):
@@ -211,14 +207,12 @@ class DreamBoothTiDataset(Dataset):
         return self._length
 
     def __getitem__(self, index):
-        example = {}
         instance_image = Image.open(
             self.instance_images_path[index % self.num_instance_images]
         )
-        if not instance_image.mode == "RGB":
+        if instance_image.mode != "RGB":
             instance_image = instance_image.convert("RGB")
-        example["instance_images"] = self.image_transforms(instance_image)
-
+        example = {"instance_images": self.image_transforms(instance_image)}
         text = random.choice(self.templates).format(
             ", ".join(
                 [self.placeholder_token]
@@ -236,7 +230,7 @@ class DreamBoothTiDataset(Dataset):
             class_image = Image.open(
                 self.class_images_path[index % self.num_class_images]
             )
-            if not class_image.mode == "RGB":
+            if class_image.mode != "RGB":
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)
             example["class_prompt_ids"] = self.tokenizer(
@@ -260,10 +254,7 @@ class PromptDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, index):
-        example = {}
-        example["prompt"] = self.prompt
-        example["index"] = index
-        return example
+        return {"prompt": self.prompt, "index": index}
 
 
 logger = get_logger(__name__)
@@ -594,7 +585,7 @@ def parse_args(input_args=None):
         args = parser.parse_args()
 
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    if env_local_rank != -1 and env_local_rank != args.local_rank:
+    if env_local_rank not in [-1, args.local_rank]:
         args.local_rank = env_local_rank
 
     if args.with_prior_preservation:
@@ -711,10 +702,8 @@ def main(args):
                 torch.cuda.empty_cache()
 
     # Handle the repository creation
-    if accelerator.is_main_process:
-
-        if args.output_dir is not None:
-            os.makedirs(args.output_dir, exist_ok=True)
+    if accelerator.is_main_process and args.output_dir is not None:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     # Load the tokenizer
     if args.tokenizer_name:
@@ -1078,80 +1067,83 @@ def main(args):
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                if args.save_steps and global_step - last_save >= args.save_steps:
-                    if accelerator.is_main_process:
-                        # newer versions of accelerate allow the 'keep_fp32_wrapper' arg. without passing
-                        # it, the models will be unwrapped, and when they are then used for further training,
-                        # we will crash. pass this, but only to newer versions of accelerate. fixes
-                        # https://github.com/huggingface/diffusers/issues/1566
-                        accepts_keep_fp32_wrapper = "keep_fp32_wrapper" in set(
-                            inspect.signature(
-                                accelerator.unwrap_model
-                            ).parameters.keys()
+                if (
+                    args.save_steps
+                    and global_step - last_save >= args.save_steps
+                    and accelerator.is_main_process
+                ):
+                    # newer versions of accelerate allow the 'keep_fp32_wrapper' arg. without passing
+                    # it, the models will be unwrapped, and when they are then used for further training,
+                    # we will crash. pass this, but only to newer versions of accelerate. fixes
+                    # https://github.com/huggingface/diffusers/issues/1566
+                    accepts_keep_fp32_wrapper = "keep_fp32_wrapper" in set(
+                        inspect.signature(
+                            accelerator.unwrap_model
+                        ).parameters.keys()
+                    )
+                    extra_args = (
+                        {"keep_fp32_wrapper": True}
+                        if accepts_keep_fp32_wrapper
+                        else {}
+                    )
+                    pipeline = StableDiffusionPipeline.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        unet=accelerator.unwrap_model(unet, **extra_args),
+                        text_encoder=accelerator.unwrap_model(
+                            text_encoder, **extra_args
+                        ),
+                        revision=args.revision,
+                    )
+
+                    filename_unet = (
+                        f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.pt"
+                    )
+                    filename_text_encoder = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.text_encoder.pt"
+                    print(f"save weights {filename_unet}, {filename_text_encoder}")
+                    save_lora_weight(pipeline.unet, filename_unet)
+
+                    save_lora_weight(
+                        pipeline.text_encoder,
+                        filename_text_encoder,
+                        target_replace_module=["CLIPAttention"],
+                    )
+
+                    for _up, _down in extract_lora_ups_down(pipeline.unet):
+                        print(
+                            "First Unet Layer's Up Weight is now : ",
+                            _up.weight.data,
                         )
-                        extra_args = (
-                            {"keep_fp32_wrapper": True}
-                            if accepts_keep_fp32_wrapper
-                            else {}
+                        print(
+                            "First Unet Layer's Down Weight is now : ",
+                            _down.weight.data,
                         )
-                        pipeline = StableDiffusionPipeline.from_pretrained(
-                            args.pretrained_model_name_or_path,
-                            unet=accelerator.unwrap_model(unet, **extra_args),
-                            text_encoder=accelerator.unwrap_model(
-                                text_encoder, **extra_args
-                            ),
-                            revision=args.revision,
+                        break
+
+                    for _up, _down in extract_lora_ups_down(
+                        pipeline.text_encoder,
+                        target_replace_module=["CLIPAttention"],
+                    ):
+                        print(
+                            "First Text Encoder Layer's Up Weight is now : ",
+                            _up.weight.data,
                         )
-
-                        filename_unet = (
-                            f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.pt"
+                        print(
+                            "First Text Encoder Layer's Down Weight is now : ",
+                            _down.weight.data,
                         )
-                        filename_text_encoder = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.text_encoder.pt"
-                        print(f"save weights {filename_unet}, {filename_text_encoder}")
-                        save_lora_weight(pipeline.unet, filename_unet)
+                        break
 
-                        save_lora_weight(
-                            pipeline.text_encoder,
-                            filename_text_encoder,
-                            target_replace_module=["CLIPAttention"],
-                        )
+                    filename_ti = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.ti.pt"
 
-                        for _up, _down in extract_lora_ups_down(pipeline.unet):
-                            print(
-                                "First Unet Layer's Up Weight is now : ",
-                                _up.weight.data,
-                            )
-                            print(
-                                "First Unet Layer's Down Weight is now : ",
-                                _down.weight.data,
-                            )
-                            break
+                    save_progress(
+                        pipeline.text_encoder,
+                        placeholder_token_id,
+                        accelerator,
+                        args,
+                        filename_ti,
+                    )
 
-                        for _up, _down in extract_lora_ups_down(
-                            pipeline.text_encoder,
-                            target_replace_module=["CLIPAttention"],
-                        ):
-                            print(
-                                "First Text Encoder Layer's Up Weight is now : ",
-                                _up.weight.data,
-                            )
-                            print(
-                                "First Text Encoder Layer's Down Weight is now : ",
-                                _down.weight.data,
-                            )
-                            break
-
-                        filename_ti = f"{args.output_dir}/lora_weight_e{epoch}_s{global_step}.ti.pt"
-
-                        save_progress(
-                            pipeline.text_encoder,
-                            placeholder_token_id,
-                            accelerator,
-                            args,
-                            filename_ti,
-                        )
-
-                        last_save = global_step
+                    last_save = global_step
 
                 logs = {
                     "loss": loss.detach().item(),
@@ -1175,16 +1167,16 @@ def main(args):
 
         print("\n\nLora TRAINING DONE!\n\n")
 
-        if args.output_format == "pt" or args.output_format == "both":
-            save_lora_weight(pipeline.unet, args.output_dir + "/lora_weight.pt")
+        if args.output_format in ["pt", "both"]:
+            save_lora_weight(pipeline.unet, f"{args.output_dir}/lora_weight.pt")
 
             save_lora_weight(
                 text_encoder,
-                args.output_dir + "/lora_weight.text_encoder.pt",
+                f"{args.output_dir}/lora_weight.text_encoder.pt",
                 target_replace_module=["CLIPAttention"],
             )
 
-        if args.output_format == "safe" or args.output_format == "both":
+        if args.output_format in ["safe", "both"]:
             loras = {}
             loras["unet"] = (pipeline.unet, {"CrossAttention", "Attention", "GEGLU"})
             loras["text_encoder"] = (pipeline.text_encoder, {"CLIPAttention"})
@@ -1198,7 +1190,7 @@ def main(args):
             embeds = {args.placeholder_token: learned_embeds.detach().cpu()}
 
             save_safeloras_with_embeds(
-                loras, embeds, args.output_dir + "/lora_weight.safetensors"
+                loras, embeds, f"{args.output_dir}/lora_weight.safetensors"
             )
 
     accelerator.end_training()

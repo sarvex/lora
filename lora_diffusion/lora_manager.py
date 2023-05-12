@@ -13,29 +13,20 @@ from .lora import (
 def lora_join(lora_safetenors: list):
     metadatas = [dict(safelora.metadata()) for safelora in lora_safetenors]
     _total_metadata = {}
-    total_metadata = {}
     total_tensor = {}
     total_rank = 0
     ranklist = []
     for _metadata in metadatas:
-        rankset = []
-        for k, v in _metadata.items():
-            if k.endswith("rank"):
-                rankset.append(int(v))
-
+        rankset = [int(v) for k, v in _metadata.items() if k.endswith("rank")]
         assert len(set(rankset)) <= 1, "Rank should be the same per model"
-        if len(rankset) == 0:
+        if not rankset:
             rankset = [0]
 
         total_rank += rankset[0]
-        _total_metadata.update(_metadata)
+        _total_metadata |= _metadata
         ranklist.append(rankset[0])
 
-    # remove metadata about tokens
-    for k, v in _total_metadata.items():
-        if v != "<embed>":
-            total_metadata[k] = v
-
+    total_metadata = {k: v for k, v in _total_metadata.items() if v != "<embed>"}
     tensorkeys = set()
     for safelora in lora_safetenors:
         tensorkeys.update(safelora.keys())
@@ -44,9 +35,7 @@ def lora_join(lora_safetenors: list):
         if keys.startswith("text_encoder") or keys.startswith("unet"):
             tensorset = [safelora.get_tensor(keys) for safelora in lora_safetenors]
 
-            is_down = keys.endswith("down")
-
-            if is_down:
+            if is_down := keys.endswith("down"):
                 _tensor = torch.cat(tensorset, dim=0)
                 assert _tensor.shape[0] == total_rank
             else:

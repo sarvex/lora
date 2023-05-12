@@ -34,7 +34,7 @@ def add(
     ] = "lpl",
     with_text_lora: bool = False,
 ):
-    print("Lora Add, mode " + mode)
+    print(f"Lora Add, mode {mode}")
     if mode == "lpl":
         if path_1.endswith(".pt") and path_2.endswith(".pt"):
             for _path_1, _path_2, opt in [(path_1, path_2, "unet")] + (
@@ -63,9 +63,7 @@ def add(
                     x1.data = alpha_1 * x1.data + alpha_2 * x2.data
                     y1.data = alpha_1 * y1.data + alpha_2 * y2.data
 
-                    out_list.append(x1)
-                    out_list.append(y1)
-
+                    out_list.extend((x1, y1))
                 if opt == "unet":
 
                     print("Saving merged UNET to", output_path)
@@ -82,9 +80,7 @@ def add(
             safeloras_1 = safe_open(path_1, framework="pt", device="cpu")
             safeloras_2 = safe_open(path_2, framework="pt", device="cpu")
 
-            metadata = dict(safeloras_1.metadata())
-            metadata.update(dict(safeloras_2.metadata()))
-
+            metadata = dict(safeloras_1.metadata()) | safeloras_2.metadata()
             ret_tensor = {}
 
             for keys in set(list(safeloras_1.keys()) + list(safeloras_2.keys())):
@@ -129,7 +125,7 @@ def add(
     elif mode == "upl-ckpt-v2":
 
         assert output_path.endswith(".ckpt"), "Only .ckpt files are supported"
-        name = os.path.basename(output_path)[0:-5]
+        name = os.path.basename(output_path)[:-5]
 
         print(
             f"You will be using {name} as the token in A1111 webui. Make sure {name} is unique enough token."
@@ -147,7 +143,7 @@ def add(
         monkeypatch_remove_lora(loaded_pipeline.unet)
         monkeypatch_remove_lora(loaded_pipeline.text_encoder)
 
-        _tmp_output = output_path + ".tmp"
+        _tmp_output = f"{output_path}.tmp"
 
         loaded_pipeline.save_pretrained(_tmp_output)
         convert_to_ckpt(_tmp_output, output_path, as_half=True)
@@ -162,7 +158,7 @@ def add(
             "name": name,
         }
 
-        torch.save(ret, output_path[:-5] + ".pt")
+        torch.save(ret, f"{output_path[:-5]}.pt")
         print(
             f"Textual embedding saved as {output_path[:-5]}.pt, put it in the embedding folder and use it as {name} in A1111 repo, "
         )

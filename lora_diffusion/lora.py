@@ -182,7 +182,7 @@ def _find_children(
     # For each target find every linear_class module that isn't a child of a LoraInjectedLinear
     for parent in model.modules():
         for name, module in parent.named_children():
-            if any([isinstance(module, _class) for _class in search_class]):
+            if any(isinstance(module, _class) for _class in search_class):
                 yield parent, name, module
 
 
@@ -212,12 +212,12 @@ def _find_modules_v2(
         )
     else:
         # this, incase you want to naively iterate over all modules.
-        ancestors = [module for module in model.modules()]
+        ancestors = list(model.modules())
 
     # For each target find every linear_class module that isn't a child of a LoraInjectedLinear
     for ancestor in ancestors:
         for fullname, module in ancestor.named_modules():
-            if any([isinstance(module, _class) for _class in search_class]):
+            if any(isinstance(module, _class) for _class in search_class):
                 # Find the direct parent if this is a descendant, not a child, of target
                 *path, name = fullname.split(".")
                 parent = ancestor
@@ -225,7 +225,8 @@ def _find_modules_v2(
                     parent = parent.get_submodule(path.pop(0))
                 # Skip this linear if it's a child of a LoraInjectedLinear
                 if exclude_children_of and any(
-                    [isinstance(parent, _class) for _class in exclude_children_of]
+                    isinstance(parent, _class)
+                    for _class in exclude_children_of
                 ):
                     continue
                 # Otherwise, yield it
@@ -242,9 +243,11 @@ def _find_modules_old(
     for _module in model.modules():
         if _module.__class__.__name__ in ancestor_class:
 
-            for name, _child_module in _module.named_modules():
-                if _child_module.__class__ in search_class:
-                    ret.append((_module, name, _child_module))
+            ret.extend(
+                (_module, name, _child_module)
+                for name, _child_module in _module.named_modules()
+                if _child_module.__class__ in search_class
+            )
     print(ret)
     return ret
 
@@ -295,9 +298,12 @@ def inject_trainable_lora(
         _tmp.to(_child_module.weight.device).to(_child_module.weight.dtype)
         _module._modules[name] = _tmp
 
-        require_grad_params.append(_module._modules[name].lora_up.parameters())
-        require_grad_params.append(_module._modules[name].lora_down.parameters())
-
+        require_grad_params.extend(
+            (
+                _module._modules[name].lora_up.parameters(),
+                _module._modules[name].lora_down.parameters(),
+            )
+        )
         if loras != None:
             _module._modules[name].lora_up.weight = loras.pop(0)
             _module._modules[name].lora_down.weight = loras.pop(0)
@@ -366,9 +372,12 @@ def inject_trainable_lora_extended(
 
         _module._modules[name] = _tmp
 
-        require_grad_params.append(_module._modules[name].lora_up.parameters())
-        require_grad_params.append(_module._modules[name].lora_down.parameters())
-
+        require_grad_params.extend(
+            (
+                _module._modules[name].lora_up.parameters(),
+                _module._modules[name].lora_down.parameters(),
+            )
+        )
         if loras != None:
             _module._modules[name].lora_up.weight = loras.pop(0)
             _module._modules[name].lora_down.weight = loras.pop(0)
@@ -382,19 +391,17 @@ def inject_trainable_lora_extended(
 
 def extract_lora_ups_down(model, target_replace_module=DEFAULT_TARGET_REPLACE):
 
-    loras = []
-
-    for _m, _n, _child_module in _find_modules(
-        model,
-        target_replace_module,
-        search_class=[LoraInjectedLinear, LoraInjectedConv2d],
-    ):
-        loras.append((_child_module.lora_up, _child_module.lora_down))
-
-    if len(loras) == 0:
+    if loras := [
+        (_child_module.lora_up, _child_module.lora_down)
+        for _m, _n, _child_module in _find_modules(
+            model,
+            target_replace_module,
+            search_class=[LoraInjectedLinear, LoraInjectedConv2d],
+        )
+    ]:
+        return loras
+    else:
         raise ValueError("No lora injected.")
-
-    return loras
 
 
 def extract_lora_as_tensor(
@@ -415,7 +422,7 @@ def extract_lora_as_tensor(
 
         loras.append((up, down))
 
-    if len(loras) == 0:
+    if not loras:
         raise ValueError("No lora injected.")
 
     return loras
@@ -430,18 +437,24 @@ def save_lora_weight(
     for _up, _down in extract_lora_ups_down(
         model, target_replace_module=target_replace_module
     ):
-        weights.append(_up.weight.to("cpu").to(torch.float16))
-        weights.append(_down.weight.to("cpu").to(torch.float16))
-
+        weights.extend(
+            (
+                _up.weight.to("cpu").to(torch.float16),
+                _down.weight.to("cpu").to(torch.float16),
+            )
+        )
     torch.save(weights, path)
 
 
 def save_lora_as_json(model, path="./lora.json"):
     weights = []
     for _up, _down in extract_lora_ups_down(model):
-        weights.append(_up.weight.detach().cpu().numpy().tolist())
-        weights.append(_down.weight.detach().cpu().numpy().tolist())
-
+        weights.extend(
+            (
+                _up.weight.detach().cpu().numpy().tolist(),
+                _down.weight.detach().cpu().numpy().tolist(),
+            )
+        )
     import json
 
     with open(path, "w") as f:
@@ -725,9 +738,7 @@ def monkeypatch_or_replace_lora_extended(
         search_class=[nn.Linear, LoraInjectedLinear, nn.Conv2d, LoraInjectedConv2d],
     ):
 
-        if (_child_module.__class__ == nn.Linear) or (
-            _child_module.__class__ == LoraInjectedLinear
-        ):
+        if _child_module.__class__ in [nn.Linear, LoraInjectedLinear]:
             if len(loras[0].shape) != 2:
                 continue
 
@@ -750,9 +761,7 @@ def monkeypatch_or_replace_lora_extended(
             if bias is not None:
                 _tmp.linear.bias = bias
 
-        elif (_child_module.__class__ == nn.Conv2d) or (
-            _child_module.__class__ == LoraInjectedConv2d
-        ):
+        elif _child_module.__class__ in [nn.Conv2d, LoraInjectedConv2d]:
             if len(loras[0].shape) != 4:
                 continue
             _source = (
@@ -821,10 +830,6 @@ def monkeypatch_remove_lora(model):
                 _source.in_features, _source.out_features, bias is not None
             )
 
-            _tmp.weight = weight
-            if bias is not None:
-                _tmp.bias = bias
-
         else:
             _source = _child_module.conv
             weight, bias = _source.weight, _source.bias
@@ -840,9 +845,9 @@ def monkeypatch_remove_lora(model):
                 bias=bias is not None,
             )
 
-            _tmp.weight = weight
-            if bias is not None:
-                _tmp.bias = bias
+        _tmp.weight = weight
+        if bias is not None:
+            _tmp.bias = bias
 
         _module._modules[name] = _tmp
 
@@ -921,15 +926,15 @@ def apply_learned_embed_in_clip(
         dtype = text_encoder.get_input_embeddings().weight.dtype
         num_added_tokens = tokenizer.add_tokens(token)
 
-        i = 1
         if not idempotent:
+            i = 1
             while num_added_tokens == 0:
                 print(f"The tokenizer already contains the token {token}.")
                 token = f"{token[:-1]}-{i}>"
                 print(f"Attempting to add the token {token}.")
                 num_added_tokens = tokenizer.add_tokens(token)
                 i += 1
-        elif num_added_tokens == 0 and idempotent:
+        elif num_added_tokens == 0:
             print(f"The tokenizer already contains the token {token}.")
             print(f"Replacing {token} embedding.")
 
@@ -971,9 +976,9 @@ def patch_pipe(
         # torch format
 
         if maybe_unet_path.endswith(".ti.pt"):
-            unet_path = maybe_unet_path[:-6] + ".pt"
+            unet_path = f"{maybe_unet_path[:-6]}.pt"
         elif maybe_unet_path.endswith(".text_encoder.pt"):
-            unet_path = maybe_unet_path[:-16] + ".pt"
+            unet_path = f"{maybe_unet_path[:-16]}.pt"
         else:
             unet_path = maybe_unet_path
 

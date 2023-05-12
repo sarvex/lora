@@ -71,11 +71,7 @@ TEMPLATE_MAP = {
 
 
 def _randomset(lis):
-    ret = []
-    for i in range(len(lis)):
-        if random.random() < 0.5:
-            ret.append(lis[i])
-    return ret
+    return [lis[i] for i in range(len(lis)) if random.random() < 0.5]
 
 
 def _shuffle(lis):
@@ -146,16 +142,16 @@ class PivotalTuningDatasetCapation(Dataset):
         if not instance_data_root.exists():
             raise ValueError("Instance images root doesn't exists.")
 
-        self.instance_images_path = []
         self.mask_path = []
 
-        assert not (
-            use_mask_captioned_data and use_template
+        self.instance_images_path = []
+        assert (
+            not use_mask_captioned_data or not use_template
         ), "Can't use both mask caption data and template."
 
         # Prepare the instance images
         if use_mask_captioned_data:
-            src_imgs = glob.glob(str(instance_data_root) + "/*src.jpg")
+            src_imgs = glob.glob(f"{str(instance_data_root)}/*src.jpg")
             for f in src_imgs:
                 idx = int(str(Path(f).stem).split(".")[0])
                 mask_path = f"{instance_data_root}/{idx}.mask.png"
@@ -170,14 +166,14 @@ class PivotalTuningDatasetCapation(Dataset):
 
         else:
             possibily_src_images = (
-                glob.glob(str(instance_data_root) + "/*.jpg")
-                + glob.glob(str(instance_data_root) + "/*.png")
-                + glob.glob(str(instance_data_root) + "/*.jpeg")
+                glob.glob(f"{str(instance_data_root)}/*.jpg")
+                + glob.glob(f"{str(instance_data_root)}/*.png")
+                + glob.glob(f"{str(instance_data_root)}/*.jpeg")
             )
             possibily_src_images = (
                 set(possibily_src_images)
-                - set(glob.glob(str(instance_data_root) + "/*mask.png"))
-                - set([str(instance_data_root) + "/caption.txt"])
+                - set(glob.glob(f"{str(instance_data_root)}/*mask.png"))
+                - {f"{str(instance_data_root)}/caption.txt"}
             )
 
             self.instance_images_path = list(set(possibily_src_images))
@@ -185,9 +181,7 @@ class PivotalTuningDatasetCapation(Dataset):
                 x.split("/")[-1].split(".")[0] for x in self.instance_images_path
             ]
 
-        assert (
-            len(self.instance_images_path) > 0
-        ), "No images found in the instance data root."
+        assert self.instance_images_path, "No images found in the instance data root."
 
         self.instance_images_path = sorted(self.instance_images_path)
 
@@ -206,7 +200,7 @@ class PivotalTuningDatasetCapation(Dataset):
                         "Warning : this will pre-process all the images in the instance data root."
                     )
 
-                    if len(self.mask_path) > 0:
+                    if self.mask_path:
                         print(
                             "Warning : masks already exists, but will be overwritten."
                         )
@@ -222,9 +216,10 @@ class PivotalTuningDatasetCapation(Dataset):
 
                     break
 
-            for idx in range(len(self.instance_images_path)):
-                self.mask_path.append(f"{instance_data_root}/{idx}.mask.png")
-
+            self.mask_path.extend(
+                f"{instance_data_root}/{idx}.mask.png"
+                for idx in range(len(self.instance_images_path))
+            )
         self.num_instance_images = len(self.instance_images_path)
         self.token_map = token_map
 
@@ -257,14 +252,12 @@ class PivotalTuningDatasetCapation(Dataset):
         return self._length
 
     def __getitem__(self, index):
-        example = {}
         instance_image = Image.open(
             self.instance_images_path[index % self.num_instance_images]
         )
-        if not instance_image.mode == "RGB":
+        if instance_image.mode != "RGB":
             instance_image = instance_image.convert("RGB")
-        example["instance_images"] = self.image_transforms(instance_image)
-
+        example = {"instance_images": self.image_transforms(instance_image)}
         if self.train_inpainting:
             (
                 example["instance_masks"],
